@@ -1,10 +1,8 @@
 --[[
-    ORB HUB
+    ORB HUB · AC soft bypass edition
     ─────────────────────────────────────
-    Merged: Rose sync engine (best channel pull)
-          + XEN PlaceId spoof + invis/lagback
-          + Heresy priority + clean mobile UI
-    drag panels · mobile first · no logo trash
+    quieter invis for current SAB AC
+    mobile UI kept
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -45,11 +43,11 @@ local cfg = loadCfg()
 _G.OrbHub = _G.OrbHub or {}
 local OH = _G.OrbHub
 
-OH.InvisAngle         = cfg.InvisAngle or 225
-OH.SinkDepth          = cfg.SinkDepth or 8
-OH.AutoInvisOnSteal   = cfg.AutoInvisOnSteal or false
+OH.InvisAngle         = cfg.InvisAngle or 195
+OH.SinkDepth          = cfg.SinkDepth or 6.8
+OH.AutoInvisOnSteal   = cfg.AutoInvisOnSteal or true
 OH.AutoRecoverLagback = cfg.AutoRecoverLagback ~= false
-OH.Walkspeed          = cfg.Walkspeed or 28
+OH.Walkspeed          = cfg.Walkspeed or 26
 OH.WalkspeedEnabled   = cfg.WalkspeedEnabled ~= false
 OH.PriorityList       = cfg.PriorityList or {}
 OH.MutationPriority   = cfg.MutationPriority or {}
@@ -74,7 +72,7 @@ local function persist()
 end
 
 -- ═══════════════════════════════════════
--- PLACEID SPOOF (XEN)
+-- PLACEID (kept light)
 -- ═══════════════════════════════════════
 local XEN_PLACE = 109983668079237
 if game.PlaceId ~= XEN_PLACE then
@@ -90,7 +88,7 @@ if game.PlaceId ~= XEN_PLACE then
 end
 
 -- ═══════════════════════════════════════
--- SYNCHRONIZER / CHANNEL SCAN (Rose path)
+-- CHANNEL SCAN
 -- ═══════════════════════════════════════
 local chanTable = {}
 local function getPackages()
@@ -168,7 +166,6 @@ local function scanAllAnimals()
     return out
 end
 
--- warm pull
 task.spawn(function()
     local plots = workspace:WaitForChild("Plots", 12)
     if not plots then return end
@@ -176,23 +173,33 @@ task.spawn(function()
         task.spawn(pullPlot, p.Name)
     end
     plots.ChildAdded:Connect(function(p)
-        task.wait(0.4)
+        task.wait(0.35)
         pullPlot(p.Name)
     end)
 end)
 
 -- ═══════════════════════════════════════
--- INVISIBLE STEAL CORE (XEN + Heresy hybrid)
+-- QUIETER INVISIBLE STEAL (less AC trigger)
 -- ═══════════════════════════════════════
-local invisConn, cloneRoot
+local invisConn, cloneRoot, humanoidRootPart, lastGoodCF, lagbackConn
+local lastToggle = 0
+
 local function cleanupInvis()
     if invisConn then pcall(function() invisConn:Disconnect() end) invisConn = nil end
-    if cloneRoot then pcall(function() cloneRoot:Destroy() end) cloneRoot = nil end
+    if lagbackConn then pcall(function() lagbackConn:Disconnect() end) lagbackConn = nil end
+    if cloneRoot then
+        pcall(function() cloneRoot:Destroy() end)
+        cloneRoot = nil
+    end
+    humanoidRootPart = nil
     OH.invisibleStealEnabled = false
 end
 
 local function enableInvisibleSteal()
     if OH.invisibleStealEnabled then return end
+    if tick() - lastToggle < 0.6 then return end -- anti spam
+    lastToggle = tick()
+
     local char = LP.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -200,34 +207,69 @@ local function enableInvisibleSteal()
     if not hrp or not hum then return end
 
     OH.invisibleStealEnabled = true
+    lastGoodCF = hrp.CFrame
 
+    -- soft clone only while active
     cloneRoot = Instance.new("Part")
-    cloneRoot.Name = "OrbInvisRoot"
-    cloneRoot.Size = Vector3.new(2, 2, 1)
+    cloneRoot.Name = "OrbTempRoot"
+    cloneRoot.Size = Vector3.new(1.8, 1.8, 0.9)
     cloneRoot.Transparency = 1
     cloneRoot.CanCollide = false
     cloneRoot.Anchored = false
     cloneRoot.CFrame = hrp.CFrame
     cloneRoot.Parent = workspace.CurrentCamera
 
-    local angle = math.rad(OH.InvisAngle or 225)
-    local sink  = (OH.SinkDepth or 8) * 0.5
+    humanoidRootPart = hrp
+
+    local angle = math.rad(OH.InvisAngle or 195)
+    local sink  = (OH.SinkDepth or 6.8)
 
     invisConn = RunService.Heartbeat:Connect(function()
         if not OH.invisibleStealEnabled or not char.Parent or not hrp.Parent then
             cleanupInvis()
             return
         end
-        local targetCF = hrp.CFrame - Vector3.new(0, sink, 0)
-        targetCF = targetCF * CFrame.Angles(angle, 0, 0)
+
+        -- only do heavy offset while actually stealing
+        local isStealing = LP:GetAttribute("Stealing") == true
+
+        local targetCF
+        if isStealing or OH.invisibleStealEnabled then
+            targetCF = hrp.CFrame - Vector3.new(0, sink + (math.random() * 0.4 - 0.2), 0)
+            targetCF = targetCF * CFrame.Angles(angle + (math.random() * 0.08 - 0.04), 0, 0)
+        else
+            targetCF = hrp.CFrame
+        end
+
         if cloneRoot and cloneRoot.Parent then
             cloneRoot.CFrame = targetCF
-            cloneRoot.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity
+            local vel = hrp.AssemblyLinearVelocity
+            cloneRoot.AssemblyLinearVelocity = Vector3.new(vel.X * 0.92, vel.Y * 0.55, vel.Z * 0.92)
         end
+
+        -- only kill collision while actively stealing
         pcall(function()
-            hrp.CanCollide = false
+            if isStealing then
+                hrp.CanCollide = false
+            else
+                hrp.CanCollide = true
+            end
         end)
+
+        lastGoodCF = hrp.CFrame
     end)
+
+    if OH.AutoRecoverLagback then
+        lagbackConn = RunService.Heartbeat:Connect(function()
+            if not OH.invisibleStealEnabled or not hrp or not hrp.Parent then return end
+            local dist = (hrp.Position - lastGoodCF.Position).Magnitude
+            if dist > 22 then
+                pcall(function()
+                    hrp.CFrame = lastGoodCF * CFrame.new(0, 0.8, 0)
+                end)
+            end
+        end)
+    end
 end
 
 local function disableInvisibleSteal()
@@ -249,15 +291,17 @@ _G.toggleInvisibleSteal = function()
     end
 end
 
--- auto invis on steal attribute
+-- auto only when attribute flips
 task.spawn(function()
     LP:GetAttributeChangedSignal("Stealing"):Connect(function()
         if LP:GetAttribute("Stealing") then
             if OH.AutoInvisOnSteal and not OH.invisibleStealEnabled then
+                task.wait(0.15) -- tiny delay so AC doesn’t see instant toggle
                 pcall(_G.toggleInvisibleSteal)
             end
         else
             if OH.AutoInvisOnSteal and OH.invisibleStealEnabled then
+                task.wait(0.25)
                 pcall(_G.toggleInvisibleSteal)
             end
         end
@@ -269,7 +313,7 @@ LP.CharacterAdded:Connect(function()
 end)
 
 -- ═══════════════════════════════════════
--- UI COLORS
+-- UI (mobile kept)
 -- ═══════════════════════════════════════
 local C = {
     BG      = Color3.fromRGB(10, 12, 18),
@@ -282,6 +326,7 @@ local C = {
     MUTED   = Color3.fromRGB(130, 145, 170),
     DANGER  = Color3.fromRGB(230, 70, 95),
     GREEN   = Color3.fromRGB(40, 210, 130),
+    GOLD    = Color3.fromRGB(255, 200, 60),
 }
 
 local function corner(inst, r)
@@ -310,9 +355,6 @@ local function pad(inst, l, t, r, b)
     return p
 end
 
--- ═══════════════════════════════════════
--- MAIN GUI (no logo)
--- ═══════════════════════════════════════
 local parentGui = (gethui and gethui()) or game:GetService("CoreGui") or LP:WaitForChild("PlayerGui")
 
 pcall(function()
@@ -328,11 +370,45 @@ mainSG.IgnoreGuiInset = true
 mainSG.DisplayOrder = 999999
 mainSG.Parent = parentGui
 
--- main panel
+local function isMobile()
+    return UIS.TouchEnabled and not UIS.KeyboardEnabled
+end
+
+local scale = isMobile() and 0.92 or 1
+local panelW = math.floor(300 * scale)
+local panelH = math.floor(isMobile() and 420 or 460)
+
+local logoBtn = Instance.new("ImageButton")
+logoBtn.Name = "OrbToggle"
+logoBtn.Size = UDim2.fromOffset(isMobile() and 64 or 58, isMobile() and 64 or 58)
+logoBtn.Position = UDim2.new(0, 14, 0.38, 0)
+logoBtn.BackgroundTransparency = 1
+logoBtn.Image = ""
+logoBtn.ScaleType = Enum.ScaleType.Fit
+logoBtn.ZIndex = 120
+logoBtn.Parent = mainSG
+
+local glow = Instance.new("Frame")
+glow.Size = UDim2.fromScale(1, 1)
+glow.BackgroundColor3 = C.ACCENT
+glow.BackgroundTransparency = 0.5
+glow.Parent = logoBtn
+corner(glow, 18)
+stroke(glow, C.ACCENT2, 2)
+
+local starLbl = Instance.new("TextLabel")
+starLbl.Size = UDim2.fromScale(1, 1)
+starLbl.BackgroundTransparency = 1
+starLbl.Text = "✦"
+starLbl.TextColor3 = C.ACCENT2
+starLbl.TextSize = isMobile() and 28 or 26
+starLbl.Font = Enum.Font.GothamBlack
+starLbl.Parent = logoBtn
+
 local panel = Instance.new("Frame")
 panel.Name = "MainPanel"
-panel.Size = UDim2.fromOffset(300, 460)
-panel.Position = UDim2.new(0.5, -150, 0.5, -230)
+panel.Size = UDim2.fromOffset(panelW, panelH)
+panel.Position = UDim2.new(0.5, -panelW/2, 0.5, -panelH/2)
 panel.BackgroundColor3 = C.PANEL
 panel.BorderSizePixel = 0
 panel.Visible = true
@@ -341,80 +417,64 @@ panel.Parent = mainSG
 corner(panel, 16)
 stroke(panel, Color3.fromRGB(30, 45, 70), 1.4)
 
--- header
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 46)
+header.Size = UDim2.new(1, 0, 0, isMobile() and 52 or 46)
 header.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
 header.BorderSizePixel = 0
 header.Parent = panel
 corner(header, 16)
 
 local accentBar = Instance.new("Frame")
-accentBar.Size = UDim2.new(0, 4, 1, -16)
-accentBar.Position = UDim2.fromOffset(10, 8)
+accentBar.Size = UDim2.new(0, 4, 1, -18)
+accentBar.Position = UDim2.fromOffset(12, 9)
 accentBar.BackgroundColor3 = C.ACCENT
 accentBar.BorderSizePixel = 0
 accentBar.Parent = header
 corner(accentBar, 2)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -70, 1, 0)
-title.Position = UDim2.fromOffset(22, 0)
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.fromOffset(24, 0)
 title.BackgroundTransparency = 1
 title.Text = "ORB HUB"
 title.Font = Enum.Font.GothamBlack
-title.TextSize = 17
+title.TextSize = isMobile() and 18 or 17
 title.TextColor3 = C.ACCENT2
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.fromOffset(30, 30)
-closeBtn.Position = UDim2.new(1, -38, 0.5, -15)
+closeBtn.Size = UDim2.fromOffset(isMobile() and 36 or 30, isMobile() and 36 or 30)
+closeBtn.Position = UDim2.new(1, isMobile() and -44 or -38, 0.5, isMobile() and -18 or -15)
 closeBtn.BackgroundColor3 = C.BTN
 closeBtn.Text = "×"
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 18
+closeBtn.TextSize = isMobile() and 22 or 18
 closeBtn.TextColor3 = C.MUTED
 closeBtn.AutoButtonColor = false
 closeBtn.Parent = header
-corner(closeBtn, 8)
+corner(closeBtn, 10)
 
--- minimize / reopen button (small top-left after close)
-local miniBtn = Instance.new("TextButton")
-miniBtn.Size = UDim2.fromOffset(30, 30)
-miniBtn.Position = UDim2.new(1, -74, 0.5, -15)
-miniBtn.BackgroundColor3 = C.BTN
-miniBtn.Text = "–"
-miniBtn.Font = Enum.Font.GothamBold
-miniBtn.TextSize = 18
-miniBtn.TextColor3 = C.MUTED
-miniBtn.AutoButtonColor = false
-miniBtn.Parent = header
-corner(miniBtn, 8)
-
--- body scroll
 local body = Instance.new("ScrollingFrame")
-body.Size = UDim2.new(1, -16, 1, -58)
-body.Position = UDim2.fromOffset(8, 52)
+body.Size = UDim2.new(1, -16, 1, isMobile() and -64 or -58)
+body.Position = UDim2.fromOffset(8, isMobile() and 58 or 52)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
-body.ScrollBarThickness = 3
+body.ScrollBarThickness = isMobile() and 4 or 3
 body.ScrollBarImageColor3 = C.ACCENT
 body.CanvasSize = UDim2.new(0, 0, 0, 0)
 body.AutomaticCanvasSize = Enum.AutomaticSize.Y
 body.Parent = panel
 
 local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 7)
+listLayout.Padding = UDim.new(0, isMobile() and 9 or 7)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent = body
-pad(body, 2, 4, 2, 10)
+pad(body, 2, 4, 2, 12)
 
--- helpers
 local function section(txt)
     local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 20)
+    f.Size = UDim2.new(1, 0, 0, isMobile() and 22 or 20)
     f.BackgroundTransparency = 1
     f.LayoutOrder = #body:GetChildren() + 1
     f.Parent = body
@@ -423,7 +483,7 @@ local function section(txt)
     l.BackgroundTransparency = 1
     l.Text = txt
     l.Font = Enum.Font.GothamBold
-    l.TextSize = 11
+    l.TextSize = isMobile() and 12 or 11
     l.TextColor3 = C.MUTED
     l.TextXAlignment = Enum.TextXAlignment.Left
     l.Parent = f
@@ -431,35 +491,36 @@ local function section(txt)
 end
 
 local function toggle(label, getter, setter)
+    local rowH = isMobile() and 44 or 38
     local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 38)
+    row.Size = UDim2.new(1, 0, 0, rowH)
     row.BackgroundColor3 = C.ROW
     row.LayoutOrder = #body:GetChildren() + 1
     row.Parent = body
-    corner(row, 10)
+    corner(row, 12)
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -78, 1, 0)
-    lbl.Position = UDim2.fromOffset(12, 0)
+    lbl.Size = UDim2.new(1, -90, 1, 0)
+    lbl.Position = UDim2.fromOffset(14, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text = label
     lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = 13
+    lbl.TextSize = isMobile() and 14 or 13
     lbl.TextColor3 = C.TEXT
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Parent = row
 
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.fromOffset(56, 26)
-    btn.Position = UDim2.new(1, -66, 0.5, -13)
+    btn.Size = UDim2.fromOffset(isMobile() and 64 or 56, isMobile() and 30 or 26)
+    btn.Position = UDim2.new(1, isMobile() and -74 or -66, 0.5, isMobile() and -15 or -13)
     btn.BackgroundColor3 = getter() and C.GREEN or C.BTN
     btn.Text = getter() and "ON" or "OFF"
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 11
+    btn.TextSize = isMobile() and 12 or 11
     btn.TextColor3 = C.TEXT
     btn.AutoButtonColor = false
     btn.Parent = row
-    corner(btn, 8)
+    corner(btn, 9)
 
     btn.MouseButton1Click:Connect(function()
         local v = not getter()
@@ -472,24 +533,22 @@ local function toggle(label, getter, setter)
 end
 
 local function action(label, callback)
+    local btnH = isMobile() and 42 or 36
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.Size = UDim2.new(1, 0, 0, btnH)
     btn.BackgroundColor3 = C.BTN
     btn.Text = label
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 13
+    btn.TextSize = isMobile() and 14 or 13
     btn.TextColor3 = C.TEXT
     btn.AutoButtonColor = false
     btn.LayoutOrder = #body:GetChildren() + 1
     btn.Parent = body
-    corner(btn, 10)
+    corner(btn, 12)
     btn.MouseButton1Click:Connect(callback)
     return btn
 end
 
--- ═══════════════════════════════════════
--- BUILD SECTIONS
--- ═══════════════════════════════════════
 section("STEAL / INVIS")
 
 toggle("Invisible Steal", function()
@@ -554,43 +613,19 @@ action("Server Hop", function()
     TeleportService:Teleport(game.PlaceId, LP)
 end)
 
--- ═══════════════════════════════════════
--- CLOSE / MINIMIZE + DRAG
--- ═══════════════════════════════════════
-local isMinimized = false
+local function setUI(visible)
+    OH.UIVisible = visible
+    panel.Visible = visible
+end
+
+logoBtn.MouseButton1Click:Connect(function()
+    setUI(not panel.Visible)
+end)
 
 closeBtn.MouseButton1Click:Connect(function()
-    panel.Visible = false
+    setUI(false)
 end)
 
-miniBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    if isMinimized then
-        body.Visible = false
-        panel.Size = UDim2.fromOffset(300, 46)
-        miniBtn.Text = "+"
-    else
-        body.Visible = true
-        panel.Size = UDim2.fromOffset(300, 460)
-        miniBtn.Text = "–"
-    end
-end)
-
--- keybind to reopen (LeftControl)
-UIS.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.LeftControl then
-        panel.Visible = not panel.Visible
-        if panel.Visible and isMinimized then
-            isMinimized = false
-            body.Visible = true
-            panel.Size = UDim2.fromOffset(300, 460)
-            miniBtn.Text = "–"
-        end
-    end
-end)
-
--- drag from header
 do
     local dragging, startMouse, startPos
     header.InputBegan:Connect(function(input)
@@ -617,12 +652,36 @@ do
     end)
 end
 
--- FOV
+do
+    local dragging, startMouse, startPos
+    logoBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            startMouse = input.Position
+            startPos = logoBtn.Position
+        end
+    end)
+    logoBtn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - startMouse
+            logoBtn.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
 pcall(function()
     workspace.CurrentCamera.FieldOfView = OH.FOV
 end)
 
--- walkspeed on respawn
 LP.CharacterAdded:Connect(function(char)
     task.wait(0.4)
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -631,4 +690,4 @@ LP.CharacterAdded:Connect(function(char)
     end
 end)
 
-print("[ORB HUB] loaded · no logo · LeftCtrl toggles UI")
+print("[ORB HUB] loaded · quieter AC path · mobile ready")
