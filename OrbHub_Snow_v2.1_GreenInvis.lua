@@ -1,0 +1,1112 @@
+--[[
+    ORB HUB · SNOW EDITION v2.2 (green xen invis + move)
+    ─────────────────────────
+    snow UI · deep underground hitbox
+    infinite jump · auto TP · auto clone at base
+    brainrot ESP · stronger unhittable
+]]
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UIS               = game:GetService("UserInputService")
+local TS                = game:GetService("TweenService")
+local HS                = game:GetService("HttpService")
+local RS                = game:GetService("ReplicatedStorage")
+local TeleportService   = game:GetService("TeleportService")
+local LP                = Players.LocalPlayer
+
+-- ═══════════════════════════════════════
+-- CONFIG
+-- ═══════════════════════════════════════
+local CFG_FILE = "OrbHubSnow.json"
+
+local function loadCfg()
+    local d = {}
+    if type(isfile) == "function" and isfile(CFG_FILE) then
+        pcall(function()
+            local t = HS:JSONDecode(readfile(CFG_FILE))
+            if type(t) == "table" then d = t end
+        end)
+    end
+    return d
+end
+
+local function saveCfg(data)
+    if type(writefile) == "function" then
+        pcall(function() writefile(CFG_FILE, HS:JSONEncode(data)) end)
+    end
+end
+
+local cfg = loadCfg()
+
+_G.OrbHub = _G.OrbHub or {}
+local OH = _G.OrbHub
+
+OH.InvisAngle         = cfg.InvisAngle or 6             -- almost no rotation = no tumble
+OH.SinkDepth          = cfg.SinkDepth or 6.8            -- solid sink without launching
+OH.AutoInvisOnSteal   = cfg.AutoInvisOnSteal ~= false
+OH.AutoRecoverLagback = cfg.AutoRecoverLagback ~= false
+OH.Walkspeed          = cfg.Walkspeed or 24
+OH.WalkspeedEnabled   = cfg.WalkspeedEnabled ~= false
+OH.AutoTP             = cfg.AutoTP == true            -- default OFF (was causing chaos)
+OH.InfiniteJump       = cfg.InfiniteJump ~= false
+OH.AutoCloneAtBase    = cfg.AutoCloneAtBase == true   -- default OFF
+OH.BrainrotESP        = cfg.BrainrotESP ~= false
+OH.ESPMinGen          = cfg.ESPMinGen or 5000
+OH.FOV                = cfg.FOV or 75
+OH.SnowEnabled        = cfg.SnowEnabled ~= false
+OH.UIVisible          = true
+OH.invisibleStealEnabled = false
+
+local function persist()
+    saveCfg({
+        InvisAngle         = OH.InvisAngle,
+        SinkDepth          = OH.SinkDepth,
+        AutoInvisOnSteal   = OH.AutoInvisOnSteal,
+        AutoRecoverLagback = OH.AutoRecoverLagback,
+        Walkspeed          = OH.Walkspeed,
+        WalkspeedEnabled   = OH.WalkspeedEnabled,
+        AutoTP             = OH.AutoTP,
+        InfiniteJump       = OH.InfiniteJump,
+        AutoCloneAtBase    = OH.AutoCloneAtBase,
+        BrainrotESP        = OH.BrainrotESP,
+        ESPMinGen          = OH.ESPMinGen,
+        FOV                = OH.FOV,
+        SnowEnabled        = OH.SnowEnabled,
+    })
+end
+
+-- ═══════════════════════════════════════
+-- CHANNEL SCAN
+-- ═══════════════════════════════════════
+local chanTable = {}
+local function getPackages()
+    return RS:FindFirstChild("Packages") or RS:WaitForChild("Packages", 8)
+end
+
+local function pullPlot(name)
+    local pk = getPackages()
+    local sy = pk and pk:FindFirstChild("Synchronizer")
+    local rf = sy and sy:FindFirstChild("RequestData")
+    if not rf or not rf:IsA("RemoteFunction") then return nil end
+    local ok, res = pcall(function() return rf:InvokeServer(name) end)
+    if ok and type(res) == "table" then
+        chanTable[name] = res
+        return res
+    end
+    return nil
+end
+
+local function animalsOf(ct)
+    if type(ct) ~= "table" then return nil end
+    return rawget(ct, "AnimalList") or rawget(ct, "Animals")
+end
+
+local function ownerName(o)
+    if o == nil then return nil end
+    if typeof(o) == "Instance" then return o.Name end
+    if type(o) == "table" then return o.Name end
+    if type(o) == "string" and o ~= "" and o ~= "..." then return o end
+    return nil
+end
+
+local function getGen(animal)
+    local gen = 0
+    pcall(function()
+        if _G._xenGen then
+            gen = _G._xenGen(animal.Index, animal.Mutation, animal.Traits) or 0
+        elseif _G.JAF_SafeGen then
+            gen = _G.JAF_SafeGen(animal.Index, animal.Mutation, animal.Traits) or 0
+        end
+    end)
+    return gen
+end
+
+local function scanAllAnimals()
+    local out = {}
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return out end
+    for _, plot in ipairs(plots:GetChildren()) do
+        local ct = chanTable[plot.Name] or pullPlot(plot.Name)
+        if type(ct) == "table" then
+            local al = animalsOf(ct)
+            local owner = ownerName(rawget(ct, "Owner"))
+            if type(al) == "table" then
+                for slot, animal in pairs(al) do
+                    if type(animal) == "table" and animal.Index then
+                        local gen = getGen(animal)
+                        table.insert(out, {
+                            name = animal.Index,
+                            mutation = animal.Mutation,
+                            gen = gen,
+                            owner = owner,
+                            plot = plot.Name,
+                            slot = tostring(slot),
+                            uid = plot.Name .. "_" .. tostring(slot),
+                        })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return (a.gen or 0) > (b.gen or 0) end)
+    return out
+end
+
+task.spawn(function()
+    local plots = workspace:WaitForChild("Plots", 10)
+    if not plots then return end
+    for _, p in ipairs(plots:GetChildren()) do
+        task.spawn(pullPlot, p.Name)
+    end
+    plots.ChildAdded:Connect(function(p)
+        task.wait(0.4)
+        pullPlot(p.Name)
+    end)
+end)
+
+-- ═══════════════════════════════════════
+-- DEEP UNDERGROUND + UNHITTABLE
+-- ═══════════════════════════════════════
+local invisConn, lagbackConn
+local lastToggle = 0
+local lastGoodCF = CFrame.new()
+local lastApply = 0
+local surfaceOrb = nil
+local surfacePos = Vector3.zero
+
+local function destroyOrb()
+    if surfaceOrb then
+        pcall(function() surfaceOrb:Destroy() end)
+        surfaceOrb = nil
+    end
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if cam and hum then
+            cam.CameraSubject = hum
+            cam.CameraType = Enum.CameraType.Custom
+        end
+    end)
+end
+
+local function ensureOrb(atPos)
+    if surfaceOrb and surfaceOrb.Parent then
+        surfaceOrb.CFrame = CFrame.new(atPos)
+        return surfaceOrb
+    end
+
+    local orb = Instance.new("Part")
+    orb.Name = "OrbProxy"
+    orb.Shape = Enum.PartType.Ball
+    orb.Size = Vector3.new(2.4, 2.4, 2.4)
+    orb.Material = Enum.Material.Neon
+    orb.Color = Color3.fromRGB(80, 255, 140)          -- green like the video aura
+    orb.Transparency = 0.25
+    orb.Anchored = true
+    orb.CanCollide = false
+    orb.CanQuery = false
+    orb.CanTouch = false
+    orb.CastShadow = false
+    orb.CFrame = CFrame.new(atPos)
+    orb.Parent = workspace.CurrentCamera
+
+    local light = Instance.new("PointLight")
+    light.Color = Color3.fromRGB(90, 255, 150)
+    light.Brightness = 3.2
+    light.Range = 16
+    light.Parent = orb
+
+    -- outer ring that spins (matches the green circles in the clip)
+    local ring = Instance.new("Part")
+    ring.Name = "OrbRing"
+    ring.Shape = Enum.PartType.Cylinder
+    ring.Size = Vector3.new(0.12, 3.8, 3.8)
+    ring.Material = Enum.Material.Neon
+    ring.Color = Color3.fromRGB(60, 255, 120)
+    ring.Transparency = 0.4
+    ring.Anchored = true
+    ring.CanCollide = false
+    ring.CFrame = CFrame.new(atPos) * CFrame.Angles(0, 0, math.rad(90))
+    ring.Parent = orb
+
+    -- second thinner ring for that double-aura look
+    local ring2 = Instance.new("Part")
+    ring2.Name = "OrbRing2"
+    ring2.Shape = Enum.PartType.Cylinder
+    ring2.Size = Vector3.new(0.08, 4.4, 4.4)
+    ring2.Material = Enum.Material.Neon
+    ring2.Color = Color3.fromRGB(140, 255, 180)
+    ring2.Transparency = 0.55
+    ring2.Anchored = true
+    ring2.CanCollide = false
+    ring2.CFrame = CFrame.new(atPos) * CFrame.Angles(0, 0, math.rad(90))
+    ring2.Parent = orb
+
+    surfaceOrb = orb
+    return orb
+end
+
+local function cleanupInvis()
+    if invisConn then pcall(function() invisConn:Disconnect() end) invisConn = nil end
+    if lagbackConn then pcall(function() lagbackConn:Disconnect() end) lagbackConn = nil end
+    destroyOrb()
+    local char = LP.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function()
+                hrp.CanCollide = true
+                hrp.Transparency = 0
+            end)
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                pcall(function() part.CanCollide = true end)
+            end
+        end
+    end
+    OH.invisibleStealEnabled = false
+end
+
+local function enableInvisibleSteal()
+    if OH.invisibleStealEnabled then return end
+    if tick() - lastToggle < 0.65 then return end
+    lastToggle = tick()
+
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    OH.invisibleStealEnabled = true
+    lastGoodCF = hrp.CFrame
+    surfacePos = hrp.Position
+    lastApply = 0
+
+    local baseAngle = math.rad(OH.InvisAngle or 5)
+    local baseSink  = (OH.SinkDepth or 7.4)
+
+    ensureOrb(surfacePos + Vector3.new(0, 1.35, 0))
+    pcall(function()
+        workspace.CurrentCamera.CameraSubject = surfaceOrb
+    end)
+
+    invisConn = RunService.Heartbeat:Connect(function(dt)
+        if not OH.invisibleStealEnabled or not char.Parent or not hrp.Parent then
+            cleanupInvis()
+            return
+        end
+
+        local isStealing = LP:GetAttribute("Stealing") == true
+        if not isStealing then
+            pcall(function()
+                hrp.CanCollide = true
+                hrp.Transparency = 0
+            end)
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part ~= hrp then
+                    pcall(function() part.CanCollide = true end)
+                end
+            end
+            if surfaceOrb then
+                surfaceOrb.Transparency = 1
+                for _, r in ipairs(surfaceOrb:GetChildren()) do
+                    if r:IsA("BasePart") then r.Transparency = 1 end
+                end
+            end
+            pcall(function()
+                if hum then workspace.CurrentCamera.CameraSubject = hum end
+            end)
+            lastGoodCF = hrp.CFrame
+            surfacePos = hrp.Position
+            return
+        end
+
+        -- === MOVEMENT WHILE UNDERGROUND ===
+        -- use MoveDirection so WASD / stick actually moves the sunk body
+        local moveDir = hum.MoveDirection
+        local speed = hum.WalkSpeed
+        if OH.WalkspeedEnabled and OH.Walkspeed then
+            speed = OH.Walkspeed
+        end
+
+        -- drive surfacePos with the player's input (this is what makes you move)
+        if moveDir.Magnitude > 0.05 then
+            surfacePos = surfacePos + Vector3.new(moveDir.X, 0, moveDir.Z) * speed * dt
+        end
+
+        -- also bleed a bit of real velocity so it doesnt feel dead
+        local vel = hrp.AssemblyLinearVelocity
+        local flatVel = Vector3.new(vel.X, 0, vel.Z)
+        if flatVel.Magnitude > 1 then
+            surfacePos = surfacePos + flatVel * dt * 0.35
+        end
+
+        local look = hrp.CFrame.LookVector
+        if moveDir.Magnitude > 0.1 then
+            -- face the direction you are actually moving
+            look = moveDir
+        end
+
+        local sunkPos = surfacePos - Vector3.new(0, baseSink, 0)
+        local target = CFrame.new(sunkPos, sunkPos + Vector3.new(look.X, 0, look.Z))
+        if baseAngle > 0.01 then
+            target = target * CFrame.Angles(baseAngle, 0, 0)
+        end
+
+        pcall(function()
+            -- keep horizontal velocity alive so movement feels natural
+            hrp.AssemblyLinearVelocity = Vector3.new(vel.X, 0, vel.Z)
+            hrp.CFrame = target
+            hrp.CanCollide = false
+            hrp.Transparency = 1
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part ~= hrp then
+                    part.CanCollide = false
+                end
+            end
+        end)
+
+        -- green surface orb follows you
+        local orb = ensureOrb(surfacePos + Vector3.new(0, 1.35, 0))
+        orb.Transparency = 0.22
+        local ring = orb:FindFirstChild("OrbRing")
+        local ring2 = orb:FindFirstChild("OrbRing2")
+        if ring then
+            ring.Transparency = 0.38
+            ring.CFrame = CFrame.new(orb.Position) * CFrame.Angles(0, tick() * 2.6, math.rad(90))
+        end
+        if ring2 then
+            ring2.Transparency = 0.52
+            ring2.CFrame = CFrame.new(orb.Position) * CFrame.Angles(0, -tick() * 1.9, math.rad(90))
+        end
+        pcall(function()
+            workspace.CurrentCamera.CameraSubject = orb
+        end)
+
+        lastGoodCF = hrp.CFrame
+    end)
+
+    if OH.AutoRecoverLagback then
+        lagbackConn = RunService.Heartbeat:Connect(function()
+            if not OH.invisibleStealEnabled or not hrp or not hrp.Parent then return end
+            local dist = (hrp.Position - lastGoodCF.Position).Magnitude
+            if dist > 26 then
+                pcall(function()
+                    hrp.CFrame = lastGoodCF * CFrame.new(0, 0.4, 0)
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                end)
+            end
+        end)
+    end
+end
+
+local function disableInvisibleSteal()
+    cleanupInvis()
+end
+
+_G.toggleInvisibleSteal = function()
+    if OH.invisibleStealEnabled then
+        disableInvisibleSteal()
+    else
+        enableInvisibleSteal()
+    end
+end
+
+-- auto trigger stays the same, just tighter timing
+task.spawn(function()
+    LP:GetAttributeChangedSignal("Stealing"):Connect(function()
+        if LP:GetAttribute("Stealing") then
+            if OH.AutoInvisOnSteal and not OH.invisibleStealEnabled then
+                task.wait(0.18)
+                pcall(_G.toggleInvisibleSteal)
+            end
+        else
+            if OH.AutoInvisOnSteal and OH.invisibleStealEnabled then
+                task.wait(0.22)
+                pcall(_G.toggleInvisibleSteal)
+            end
+        end
+    end)
+end)
+
+LP.CharacterAdded:Connect(function()
+    cleanupInvis()
+end)
+
+-- ═══════════════════════════════════════
+-- INFINITE JUMP
+-- ═══════════════════════════════════════
+local jumpConn
+local function setupInfiniteJump()
+    if jumpConn then pcall(function() jumpConn:Disconnect() end) end
+    jumpConn = UIS.JumpRequest:Connect(function()
+        if not OH.InfiniteJump then return end
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
+end
+setupInfiniteJump()
+
+-- ═══════════════════════════════════════
+-- AUTO TP (simplified Heresy style)
+-- ═══════════════════════════════════════
+local autoTPConn
+local lastTP = 0
+
+local function findBestTarget()
+    local list = scanAllAnimals()
+    if #list == 0 then return nil end
+    -- prefer high gen that isn't our own
+    for _, a in ipairs(list) do
+        if a.owner and a.owner ~= LP.Name and (a.gen or 0) > 1000 then
+            return a
+        end
+    end
+    return list[1]
+end
+
+local function getAnimalWorldPos(plotName, slot)
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return nil end
+    local plot = plots:FindFirstChild(plotName)
+    if not plot then return nil end
+    local podiums = plot:FindFirstChild("AnimalPodiums") or plot:FindFirstChild("Podiums")
+    if podiums then
+        local pod = podiums:FindFirstChild(tostring(slot)) or podiums:GetChildren()[tonumber(slot) or 1]
+        if pod then
+            local part = pod:FindFirstChildWhichIsA("BasePart", true)
+            if part then return part.Position end
+            return pod:GetPivot().Position
+        end
+    end
+    -- fallback: plot center
+    local pp = plot:FindFirstChildWhichIsA("BasePart", true)
+    return pp and pp.Position
+end
+
+local function doAutoTP()
+    if not OH.AutoTP then return end
+    if tick() - lastTP < 1.8 then return end
+    local target = findBestTarget()
+    if not target then return end
+    local pos = getAnimalWorldPos(target.plot, target.slot)
+    if not pos then return end
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if (hrp.Position - pos).Magnitude < 12 then return end
+    lastTP = tick()
+    pcall(function()
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 4, 0))
+    end)
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.6)
+        if OH.AutoTP and not LP:GetAttribute("Stealing") then
+            pcall(doAutoTP)
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════
+-- AUTO CLONE WHEN AT BASE
+-- ═══════════════════════════════════════
+local function isAtOwnBase()
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return false end
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    for _, plot in ipairs(plots:GetChildren()) do
+        local ct = chanTable[plot.Name] or pullPlot(plot.Name)
+        local owner = ct and ownerName(rawget(ct, "Owner"))
+        if owner == LP.Name then
+            local pp = plot:FindFirstChildWhichIsA("BasePart", true)
+            if pp and (hrp.Position - pp.Position).Magnitude < 45 then
+                return true, plot
+            end
+        end
+    end
+    return false
+end
+
+local lastClone = 0
+task.spawn(function()
+    while true do
+        task.wait(1.2)
+        if not OH.AutoCloneAtBase then continue end
+        if tick() - lastClone < 4 then continue end
+        local atBase = isAtOwnBase()
+        if atBase then
+            -- try common clone remotes / tools
+            pcall(function()
+                local tool = LP.Character and LP.Character:FindFirstChild("Clone") 
+                    or LP.Backpack:FindFirstChild("Clone")
+                if tool and tool:IsA("Tool") then
+                    LP.Character.Humanoid:EquipTool(tool)
+                    task.wait(0.15)
+                    tool:Activate()
+                    lastClone = tick()
+                end
+            end)
+            -- also try remote if it exists
+            pcall(function()
+                local pk = getPackages()
+                local net = pk and pk:FindFirstChild("Net")
+                if net then
+                    for _, r in ipairs(net:GetDescendants()) do
+                        if r:IsA("RemoteEvent") and (r.Name:lower():find("clone") or r.Name:lower():find("copy")) then
+                            r:FireServer()
+                            lastClone = tick()
+                            break
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════
+-- BRAINROT ESP
+-- ═══════════════════════════════════════
+local espFolder = Instance.new("Folder")
+espFolder.Name = "OrbESP"
+espFolder.Parent = workspace.CurrentCamera
+
+local activeESP = {}
+
+local function clearESP()
+    for _, v in pairs(activeESP) do
+        pcall(function() v:Destroy() end)
+    end
+    table.clear(activeESP)
+end
+
+local function createESPBillboard(adornee, text, gen)
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "OrbESP"
+    bb.Adornee = adornee
+    bb.Size = UDim2.fromOffset(160, 40)
+    bb.StudsOffset = Vector3.new(0, 3.2, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 220
+    bb.Parent = espFolder
+
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.fromScale(1, 1)
+    bg.BackgroundColor3 = Color3.fromRGB(10, 16, 30)
+    bg.BackgroundTransparency = 0.25
+    bg.BorderSizePixel = 0
+    bg.Parent = bb
+    corner(bg, 8)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.fromScale(1, 1)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 12
+    lbl.TextColor3 = gen and gen > 50000 and Color3.fromRGB(255, 220, 80) or Color3.fromRGB(180, 230, 255)
+    lbl.Parent = bg
+
+    return bb
+end
+
+local function updateESP()
+    if not OH.BrainrotESP then
+        clearESP()
+        return
+    end
+    local list = scanAllAnimals()
+    local seen = {}
+    for _, a in ipairs(list) do
+        if (a.gen or 0) >= (OH.ESPMinGen or 5000) then
+            local key = a.uid
+            seen[key] = true
+            if not activeESP[key] then
+                local pos = getAnimalWorldPos(a.plot, a.slot)
+                if pos then
+                    local part = Instance.new("Part")
+                    part.Name = "ESPAnchor"
+                    part.Anchored = true
+                    part.CanCollide = false
+                    part.Transparency = 1
+                    part.Size = Vector3.new(1, 1, 1)
+                    part.Position = pos
+                    part.Parent = espFolder
+                    local txt = (a.name or "?") .. "\n$" .. tostring(a.gen or 0)
+                    activeESP[key] = createESPBillboard(part, txt, a.gen)
+                    activeESP[key .. "_p"] = part
+                end
+            end
+        end
+    end
+    for key, obj in pairs(activeESP) do
+        if not seen[key] and not key:find("_p") then
+            pcall(function() obj:Destroy() end)
+            if activeESP[key .. "_p"] then
+                pcall(function() activeESP[key .. "_p"]:Destroy() end)
+            end
+            activeESP[key] = nil
+            activeESP[key .. "_p"] = nil
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(1.8)
+        pcall(updateESP)
+    end
+end)
+
+-- ═══════════════════════════════════════
+-- UI (SNOW)
+-- ═══════════════════════════════════════
+local C = {
+    BG      = Color3.fromRGB(8, 12, 22),
+    PANEL   = Color3.fromRGB(14, 18, 32),
+    ROW     = Color3.fromRGB(22, 28, 46),
+    BTN     = Color3.fromRGB(32, 40, 62),
+    ACCENT  = Color3.fromRGB(140, 200, 255),
+    ACCENT2 = Color3.fromRGB(180, 230, 255),
+    TEXT    = Color3.fromRGB(230, 240, 255),
+    MUTED   = Color3.fromRGB(140, 160, 190),
+    GREEN   = Color3.fromRGB(60, 210, 140),
+    DANGER  = Color3.fromRGB(230, 80, 100),
+    SNOW    = Color3.fromRGB(220, 235, 255),
+}
+
+local function corner(inst, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 12)
+    c.Parent = inst
+    return c
+end
+
+local function stroke(inst, col, thick)
+    local s = Instance.new("UIStroke")
+    s.Color = col or Color3.fromRGB(50, 70, 110)
+    s.Thickness = thick or 1.2
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = inst
+    return s
+end
+
+local function pad(inst, l, t, r, b)
+    local p = Instance.new("UIPadding")
+    p.PaddingLeft = UDim.new(0, l or 0)
+    p.PaddingTop = UDim.new(0, t or 0)
+    p.PaddingRight = UDim.new(0, r or 0)
+    p.PaddingBottom = UDim.new(0, b or 0)
+    p.Parent = inst
+    return p
+end
+
+local parentGui = (gethui and gethui()) or game:GetService("CoreGui") or LP:WaitForChild("PlayerGui")
+
+pcall(function()
+    local old = parentGui:FindFirstChild("OrbHubSnow")
+    if old then old:Destroy() end
+end)
+
+local mainSG = Instance.new("ScreenGui")
+mainSG.Name = "OrbHubSnow"
+mainSG.ResetOnSpawn = false
+mainSG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+mainSG.IgnoreGuiInset = true
+mainSG.DisplayOrder = 999999
+mainSG.Parent = parentGui
+
+local snowFrame = Instance.new("Frame")
+snowFrame.Name = "SnowLayer"
+snowFrame.Size = UDim2.fromScale(1, 1)
+snowFrame.BackgroundTransparency = 1
+snowFrame.ZIndex = 50
+snowFrame.Parent = mainSG
+
+local function spawnSnowflake()
+    if not OH.SnowEnabled then return end
+    local flake = Instance.new("TextLabel")
+    flake.BackgroundTransparency = 1
+    flake.Text = "❄"
+    flake.TextColor3 = C.SNOW
+    flake.TextTransparency = math.random(20, 55) / 100
+    flake.TextSize = math.random(10, 18)
+    flake.Size = UDim2.fromOffset(20, 20)
+    flake.Position = UDim2.new(math.random(), 0, -0.05, 0)
+    flake.ZIndex = 51
+    flake.Parent = snowFrame
+    local dur = math.random(40, 90) / 10
+    local drift = (math.random() - 0.5) * 0.35
+    local tw = TS:Create(flake, TweenInfo.new(dur, Enum.EasingStyle.Linear), {
+        Position = UDim2.new(flake.Position.X.Scale + drift, 0, 1.1, 0),
+        TextTransparency = 1,
+    })
+    tw:Play()
+    tw.Completed:Connect(function() flake:Destroy() end)
+end
+
+task.spawn(function()
+    while mainSG.Parent do
+        if OH.SnowEnabled and panel and panel.Visible then
+            spawnSnowflake()
+        end
+        task.wait(0.11)
+    end
+end)
+
+local function isMobile()
+    return UIS.TouchEnabled and not UIS.KeyboardEnabled
+end
+
+local scale = isMobile() and 0.92 or 1
+local panelW = math.floor(320 * scale)
+local panelH = math.floor(isMobile() and 520 or 560)
+
+local logoBtn = Instance.new("ImageButton")
+logoBtn.Name = "OrbToggle"
+logoBtn.Size = UDim2.fromOffset(isMobile() and 62 or 56, isMobile() and 62 or 56)
+logoBtn.Position = UDim2.new(0, 14, 0.36, 0)
+logoBtn.BackgroundTransparency = 1
+logoBtn.ZIndex = 120
+logoBtn.Parent = mainSG
+
+local glow = Instance.new("Frame")
+glow.Size = UDim2.fromScale(1, 1)
+glow.BackgroundColor3 = C.ACCENT
+glow.BackgroundTransparency = 0.45
+glow.Parent = logoBtn
+corner(glow, 18)
+stroke(glow, C.ACCENT2, 1.8)
+
+local starLbl = Instance.new("TextLabel")
+starLbl.Size = UDim2.fromScale(1, 1)
+starLbl.BackgroundTransparency = 1
+starLbl.Text = "❄"
+starLbl.TextColor3 = C.ACCENT2
+starLbl.TextSize = isMobile() and 26 or 24
+starLbl.Font = Enum.Font.GothamBlack
+starLbl.Parent = logoBtn
+
+local panel = Instance.new("Frame")
+panel.Name = "MainPanel"
+panel.Size = UDim2.fromOffset(panelW, panelH)
+panel.Position = UDim2.new(0.5, -panelW/2, 0.5, -panelH/2)
+panel.BackgroundColor3 = C.PANEL
+panel.BorderSizePixel = 0
+panel.Visible = true
+panel.ClipsDescendants = true
+panel.Parent = mainSG
+corner(panel, 18)
+stroke(panel, Color3.fromRGB(60, 100, 160), 1.5)
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, isMobile() and 54 or 50)
+header.BackgroundColor3 = Color3.fromRGB(10, 14, 26)
+header.BorderSizePixel = 0
+header.Parent = panel
+corner(header, 18)
+
+local accentBar = Instance.new("Frame")
+accentBar.Size = UDim2.new(0, 4, 1, -20)
+accentBar.Position = UDim2.fromOffset(14, 10)
+accentBar.BackgroundColor3 = C.ACCENT
+accentBar.BorderSizePixel = 0
+accentBar.Parent = header
+corner(accentBar, 3)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -90, 1, 0)
+title.Position = UDim2.fromOffset(28, 0)
+title.BackgroundTransparency = 1
+title.Text = "ORB  ·  SNOW"
+title.Font = Enum.Font.GothamBlack
+title.TextSize = isMobile() and 17 or 16
+title.TextColor3 = C.ACCENT2
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(isMobile() and 34 or 30, isMobile() and 34 or 30)
+closeBtn.Position = UDim2.new(1, isMobile() and -44 or -40, 0.5, isMobile() and -17 or -15)
+closeBtn.BackgroundColor3 = C.BTN
+closeBtn.Text = "×"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = isMobile() and 20 or 17
+closeBtn.TextColor3 = C.MUTED
+closeBtn.AutoButtonColor = false
+closeBtn.Parent = header
+corner(closeBtn, 10)
+
+local body = Instance.new("ScrollingFrame")
+body.Size = UDim2.new(1, -16, 1, isMobile() and -68 or -64)
+body.Position = UDim2.fromOffset(8, isMobile() and 60 or 56)
+body.BackgroundTransparency = 1
+body.BorderSizePixel = 0
+body.ScrollBarThickness = isMobile() and 4 or 3
+body.ScrollBarImageColor3 = C.ACCENT
+body.CanvasSize = UDim2.new(0, 0, 0, 0)
+body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+body.Parent = panel
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, isMobile() and 8 or 7)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = body
+pad(body, 2, 4, 2, 14)
+
+local function section(txt)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, isMobile() and 22 or 20)
+    f.BackgroundTransparency = 1
+    f.LayoutOrder = #body:GetChildren() + 1
+    f.Parent = body
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.fromScale(1, 1)
+    l.BackgroundTransparency = 1
+    l.Text = txt
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = isMobile() and 12 or 11
+    l.TextColor3 = C.MUTED
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = f
+    return f
+end
+
+local function toggle(label, getter, setter)
+    local rowH = isMobile() and 44 or 40
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, rowH)
+    row.BackgroundColor3 = C.ROW
+    row.LayoutOrder = #body:GetChildren() + 1
+    row.Parent = body
+    corner(row, 12)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -90, 1, 0)
+    lbl.Position = UDim2.fromOffset(14, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = isMobile() and 14 or 13
+    lbl.TextColor3 = C.TEXT
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromOffset(isMobile() and 64 or 58, isMobile() and 28 or 26)
+    btn.Position = UDim2.new(1, isMobile() and -74 or -70, 0.5, isMobile() and -14 or -13)
+    btn.BackgroundColor3 = getter() and C.GREEN or C.BTN
+    btn.Text = getter() and "ON" or "OFF"
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = isMobile() and 12 or 11
+    btn.TextColor3 = C.TEXT
+    btn.AutoButtonColor = false
+    btn.Parent = row
+    corner(btn, 9)
+
+    btn.MouseButton1Click:Connect(function()
+        local v = not getter()
+        setter(v)
+        btn.Text = v and "ON" or "OFF"
+        btn.BackgroundColor3 = v and C.GREEN or C.BTN
+        persist()
+    end)
+    return row, btn
+end
+
+local function action(label, callback)
+    local btnH = isMobile() and 42 or 38
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, btnH)
+    btn.BackgroundColor3 = C.BTN
+    btn.Text = label
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = isMobile() and 14 or 13
+    btn.TextColor3 = C.TEXT
+    btn.AutoButtonColor = false
+    btn.LayoutOrder = #body:GetChildren() + 1
+    btn.Parent = body
+    corner(btn, 12)
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+section("STEAL / INVIS")
+
+toggle("Invisible Steal (Unhittable)", function()
+    return OH.invisibleStealEnabled
+end, function(v)
+    if v then enableInvisibleSteal() else disableInvisibleSteal() end
+end)
+
+toggle("Auto Invis on Steal", function()
+    return OH.AutoInvisOnSteal
+end, function(v)
+    OH.AutoInvisOnSteal = v
+end)
+
+toggle("Lagback Recover", function()
+    return OH.AutoRecoverLagback
+end, function(v)
+    OH.AutoRecoverLagback = v
+end)
+
+section("MOVEMENT")
+
+toggle("Walkspeed", function()
+    return OH.WalkspeedEnabled
+end, function(v)
+    OH.WalkspeedEnabled = v
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = v and OH.Walkspeed or 16
+    end
+end)
+
+toggle("Infinite Jump", function()
+    return OH.InfiniteJump
+end, function(v)
+    OH.InfiniteJump = v
+end)
+
+toggle("Auto TP", function()
+    return OH.AutoTP
+end, function(v)
+    OH.AutoTP = v
+end)
+
+section("BASE / FARM")
+
+toggle("Auto Clone at Base", function()
+    return OH.AutoCloneAtBase
+end, function(v)
+    OH.AutoCloneAtBase = v
+end)
+
+section("VISUAL")
+
+toggle("Brainrot ESP", function()
+    return OH.BrainrotESP
+end, function(v)
+    OH.BrainrotESP = v
+    if not v then clearESP() end
+end)
+
+toggle("Snow Particles", function()
+    return OH.SnowEnabled
+end, function(v)
+    OH.SnowEnabled = v
+end)
+
+section("ACTIONS")
+
+action("Scan Top Animals", function()
+    local list = scanAllAnimals()
+    local top = {}
+    for i = 1, math.min(10, #list) do
+        top[#top + 1] = (list[i].name or "?") .. "  $" .. tostring(list[i].gen or 0)
+    end
+    print("[ORB SNOW] scanned", #list, "animals")
+    if #top > 0 then print(table.concat(top, "\n")) end
+end)
+
+action("Rejoin Server", function()
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+end)
+
+action("Server Hop", function()
+    TeleportService:Teleport(game.PlaceId, LP)
+end)
+
+local function setUI(visible)
+    OH.UIVisible = visible
+    panel.Visible = visible
+end
+
+logoBtn.MouseButton1Click:Connect(function()
+    setUI(not panel.Visible)
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    setUI(false)
+end)
+
+do
+    local dragging, startMouse, startPos
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            startMouse = input.Position
+            startPos = panel.Position
+        end
+    end)
+    header.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - startMouse
+            panel.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+do
+    local dragging, startMouse, startPos
+    logoBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            startMouse = input.Position
+            startPos = logoBtn.Position
+        end
+    end)
+    logoBtn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - startMouse
+            logoBtn.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+pcall(function()
+    workspace.CurrentCamera.FieldOfView = OH.FOV
+end)
+
+LP.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and OH.WalkspeedEnabled then
+        hum.WalkSpeed = OH.Walkspeed
+    end
+end)
+
+print("[ORB SNOW v2.2] loaded · green xen invis · move while sunk · unhittable · auto tp · esp")
